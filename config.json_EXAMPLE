@@ -1,0 +1,7 @@
+{
+  "server": "https://url",
+  "user": "admin",
+  "password": "Qwerty1",
+  "backup_dir": "/tmp/sites",
+  "logfile_path": "tableau-wbbackup.log"
+}

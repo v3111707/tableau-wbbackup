@@ -1,0 +1,5 @@
+*.log*
+config.json
+venv*/
+.idea
+.DS_Store
