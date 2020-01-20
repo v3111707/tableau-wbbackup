@@ -4,11 +4,11 @@
 tableau-wbbackup.py  is a tool for backup and restore workbooks with access permissions
 
 Usage:
-  tableau-wbbackup.py backup <siteid>  [-d]
+  tableau-wbbackup.py backup <siteids>...  [-d]
 
 Options:
   -d             Debug mode
-  <siteid>       site id
+  <siteids>...       site id
   backup         Start backup all workbooks in the site
 
 Examples:
@@ -26,13 +26,82 @@ import json
 from docopt import docopt
 from logging.handlers import TimedRotatingFileHandler
 
-def create_folder(folder_path):
-    if not os.path.isdir(folder_path):
-        os.mkdir(folder_path)
+
+class BackupTableauSite(object):
+    def __init__(self, server, username, password, backup_dir, site_id=''):
+        self.logger = logging.getLogger('main.BackupTableauSite')
+        self.tsc_server = TSC.Server(server_address=server, use_server_version=True)
+        tsc_auth = TSC.TableauAuth(username=username, password=password,site_id=site_id)
+        self.logger.debug(f"Login to {server}, siteid: {site_id}")
+        self.tsc_server.auth.sign_in(tsc_auth)
+        self.site_id = site_id
+        self.backup_dir = backup_dir
+
+    def _populate_wg_pr(self):
+        self.logger.debug("Run __populate_wg_pr")
+        request_options = TSC.RequestOptions(pagesize=25)
+        self.all_workbooks = list(TSC.Pager(self.tsc_server.workbooks, request_options))
+        self.logger.debug(f"all_workbooks len {len(self.all_workbooks)}")
+        self.all_projects = list(TSC.Pager(self.tsc_server.projects, request_options))
+        self.logger.debug(f"all_projects len {len(self.all_projects)}")
+
+    def _save_permissions(self, permissions, path):
+        permissions_list = [
+            {'grantee': {'id': p.grantee.id, 'tag_name': p.grantee.tag_name}, 'capabilities': p.capabilities} for p in
+            permissions]
+        if not os.path.isabs(path):
+            path = os.path.join(self.backup_dir, path)
+        self.logger.debug(f"save permissions: {permissions_list} to {path}")
+        with open(path, 'w') as f:
+            json.dump(permissions_list, f)
+
+    def _backup_projects(self):
+        for project in self.all_projects:
+            self._download_project(project, os.path.join(self.backup_dir, self.site_id))
+        for wb in self.all_workbooks:
+            self._download_workbook(wb, os.path.join(self.backup_dir, self.site_id))
+
+    def _parent_id_to_path(self, parent_id):
+        parent_project = [p for p in self.all_projects if p.id == parent_id].pop()
+        path = parent_project.name
+        if parent_project.parent_id:
+            path = os.path.join(self._parent_id_to_path(parent_project.parent_id), path)
+        return path
+
+    def _download_workbook(self, workbook, base_dir):
+        self.logger.debug(f"Run __download_workbook : {workbook.name}")
+        base_dir = os.path.join(base_dir, self._parent_id_to_path(workbook.project_id))
+        self.tsc_server.workbooks.populate_permissions(workbook)
+        base_dir = os.path.join(base_dir, 'workbooks')
+        self._create_folder(base_dir)
+        permissions_file_path = os.path.join(base_dir, f'{workbook.name}.json')
+        wb_path = self.tsc_server.workbooks.download(workbook.id, filepath=base_dir, no_extract=True)
+        self.logger.debug(f"Workbook was downloaded to {wb_path}")
+        self._save_permissions(workbook.permissions, permissions_file_path)
+
+    def _download_project(self, project, base_dir):
+        self.logger.debug(f"Run __download_project : {project.name}")
+        if project.parent_id:
+            base_dir = os.path.join(base_dir, self._parent_id_to_path(project.parent_id))
+        project_dir = os.path.join(base_dir, project.name)
+        self._create_folder(project_dir)
+        self.tsc_server.projects.populate_permissions(project)
+        permissions_file_path = os.path.join(project_dir, f'{project.name}.json')
+        self._save_permissions(project.permissions, permissions_file_path)
+
+    def _create_folder(self, folder_path):
+        if not os.path.exists(folder_path):
+            self.logger.debug(f"Create folder: {folder_path}")
+            os.makedirs(folder_path)
+
+    def run_backup(self):
+        self.logger.debug("Run run_backup")
+        self._populate_wg_pr()
+        self._backup_projects()
 
 
 def main():
-    logger = logging.getLogger('tableau-granularbackup.py')
+    logger = logging.getLogger('main')
 
     if '-d' in sys.argv:
         print(f"argv: {sys.argv}")
@@ -72,30 +141,15 @@ def main():
     argz = docopt(__doc__, argv=sys.argv[1:])
     logger.debug(f'argz: {argz}')
 
-    tserver = TSC.Server(server_address=config.get('server'))
-    tauth = TSC.TableauAuth(username=config.get('user'), password=config.get('password'), site_id=argz.get('<siteid>'))
-    backup_dir = config.get('backup_dir')
-    logger.debug(f'backup_dir: \"{backup_dir}\"')
+    if argz.get('backup'):
+        logger.info(f"Run backup {argz.get('<siteids>')}")
+        for site_id in argz.get('<siteids>'):
+            bts = BackupTableauSite(server=config.get('server'),
+                                    username=config.get('user'),
+                                    password=config.get('password'),
+                                    backup_dir=config.get('backup_dir'),
+                                    site_id=site_id)
+            bts.run_backup()
 
-    with tserver.auth.sign_in(tauth):
-        request_options = TSC.RequestOptions(pagesize=25)
-        all_workbooks = list(TSC.Pager(tserver.workbooks, request_options))
-        all_projects = list(TSC.Pager(tserver.projects, request_options))
-        site_dir = os.path.join(backup_dir,tauth.site_id)
-
-        create_folder(site_dir)
-
-        for wb in all_workbooks:
-            project_dir = os.path.join(site_dir,wb.project_name)
-            create_folder(project_dir)
-            wb_dir = os.path.join(project_dir, wb.name)
-            create_folder(wb_dir)
-            tserver.workbooks.download(wb.id, filepath=wb_dir)
-            tserver.workbooks.populate_permissions(wb)
-
-
-            print(wb)
-
-    print('END')
 if __name__ == '__main__':
     main()
