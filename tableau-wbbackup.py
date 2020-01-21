@@ -22,6 +22,7 @@ import tableauserverclient as TSC
 import os
 import sys
 import json
+import re
 
 from docopt import docopt
 from logging.handlers import TimedRotatingFileHandler
@@ -45,15 +46,15 @@ class BackupTableauSite(object):
         self.all_projects = list(TSC.Pager(self.tsc_server.projects, request_options))
         self.logger.debug(f"all_projects len {len(self.all_projects)}")
 
-    def _save_permissions(self, permissions, path):
+    def _save_params(self, tbl_object, path, filename=''):
         permissions_list = [
             {'grantee': {'id': p.grantee.id, 'tag_name': p.grantee.tag_name}, 'capabilities': p.capabilities} for p in
-            permissions]
-        if not os.path.isabs(path):
-            path = os.path.join(self.backup_dir, path)
-        self.logger.debug(f"save permissions: {permissions_list} to {path}")
+            tbl_object.permissions]
+
+        params = {"name": tbl_object.name, "filename": filename, "permissions": permissions_list }
+        self.logger.debug(f"_save_params: {params} to {path}")
         with open(path, 'w') as f:
-            json.dump(permissions_list, f)
+            json.dump(params, f)
 
     def _backup_projects(self):
         for project in self.all_projects:
@@ -74,25 +75,33 @@ class BackupTableauSite(object):
         self.tsc_server.workbooks.populate_permissions(workbook)
         base_dir = os.path.join(base_dir, 'workbooks')
         self._create_folder(base_dir)
-        permissions_file_path = os.path.join(base_dir, f'{workbook.name}.json')
+        permissions_file_path = os.path.join(base_dir, f'{self._remove_bad_path_characters(workbook.name)}.json')
         wb_path = self.tsc_server.workbooks.download(workbook.id, filepath=base_dir, no_extract=True)
+        _, filename = os.path.split(wb_path)
         self.logger.debug(f"Workbook was downloaded to {wb_path}")
-        self._save_permissions(workbook.permissions, permissions_file_path)
+        self._save_params(workbook, permissions_file_path, filename)
 
     def _download_project(self, project, base_dir):
         self.logger.debug(f"Run __download_project : {project.name}")
         if project.parent_id:
             base_dir = os.path.join(base_dir, self._parent_id_to_path(project.parent_id))
-        project_dir = os.path.join(base_dir, project.name)
+        project_filename = self._remove_bad_path_characters(project.name)
+        project_dir = os.path.join(base_dir, project_filename)
         self._create_folder(project_dir)
         self.tsc_server.projects.populate_permissions(project)
-        permissions_file_path = os.path.join(project_dir, f'{project.name}.json')
-        self._save_permissions(project.permissions, permissions_file_path)
+        permissions_file_path = os.path.join(project_dir, f'{project_filename}.json')
+        self._save_params(project, permissions_file_path)
 
     def _create_folder(self, folder_path):
         if not os.path.exists(folder_path):
             self.logger.debug(f"Create folder: {folder_path}")
             os.makedirs(folder_path)
+
+    def _remove_bad_path_characters(self, filename):
+        new_filename = re.sub('[^\w\-_\. ]', '_', filename)
+        if new_filename != filename:
+            self.logger.debug(f"_remove_bad_path_characters: {filename} ->  {new_filename}")
+        return new_filename
 
     def run_backup(self):
         self.logger.debug("Run run_backup")
