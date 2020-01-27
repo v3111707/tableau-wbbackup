@@ -50,8 +50,13 @@ class BackupTableauSite(object):
         permissions_list = [
             {'grantee': {'id': p.grantee.id, 'tag_name': p.grantee.tag_name}, 'capabilities': p.capabilities} for p in
             tbl_object.permissions]
-
-        params = {"name": tbl_object.name, "filename": filename, "permissions": permissions_list }
+        if '.ProjectItem' in str(type(tbl_object)):
+            type_item = 'project'
+        elif '.WorkbookItem' in str(type(tbl_object)):
+            type_item = 'workbook'
+        else:
+            type_item = ''
+        params = {"name": tbl_object.name, "type": type_item, "filename": filename, "permissions": permissions_list }
         self.logger.debug(f"_save_params: {params} to {path}")
         with open(path, 'w') as f:
             json.dump(params, f)
